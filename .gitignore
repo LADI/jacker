@@ -1,0 +1,5 @@
+*.o
+/jacker
+/.sconsign.dblite
+/jacker_config.hpp
+/options.conf
