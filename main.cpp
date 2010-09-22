@@ -291,6 +291,10 @@ public:
 
     std::string filepath;
     JackPlayer *player;
+
+    sigc::connection idle;
+
+    static bool ladish_L1_save_request;
     
     enum NotebookPages {
         PageSongView = 0,
@@ -313,6 +317,7 @@ public:
         pattern_frame = NULL;
         pattern_column = NULL;
         pattern_value = NULL;
+        ladish_L1_save_request = false;
     }
     
     bool parse_options(int argc, char **argv) {
@@ -891,6 +896,32 @@ public:
         }
     }
     
+    static void sigusr1_handler(int sig) {
+        //printf("SIGUSR1 received!\n");
+        ladish_L1_save_request = true;
+    }
+
+    void init_signals() {
+        if (::signal(SIGUSR1, sigusr1_handler)) {
+            fprintf(stderr, "Cannot install SIGUSR1 error handler\n");
+        }
+    }
+
+    bool on_idle() {
+        if (ladish_L1_save_request) {
+            printf("ladish L1 save request\n");
+            ladish_L1_save_request = false;
+
+            on_save_action();
+        }
+
+        return true;
+    }
+
+    void init_idle() {
+        idle = Glib::signal_idle().connect(sigc::mem_fun(*this, &App::on_idle));
+    }
+
     void run() {
         init_player();       
         
@@ -926,6 +957,8 @@ public:
         init_pattern_view();
         init_song_view();
         init_timer();
+        init_idle();
+        init_signals();
         
         fix_accelerators();
         
@@ -939,6 +972,7 @@ public:
         
         kit.run(*window);
         
+        idle.disconnect();
         mix_timer.disconnect();
         
         shutdown_player();
@@ -985,6 +1019,8 @@ public:
         return true;
     }
 };
+
+bool App::ladish_L1_save_request;
     
 } // namespace Jacker
 
