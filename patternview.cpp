@@ -717,6 +717,8 @@ PatternView::PatternView(BaseObjectType* cobject,
     font_width = 0;
     font_height = 0;
     octave = 4;
+    cursor_x = 0;
+    cursor_y = 0;
     play_position = -1;
     renderers.resize(ParamCount);
     for (size_t i = 0; i < renderers.size(); ++i) {
@@ -1123,7 +1125,7 @@ void PatternView::show_cursor(const PatternCursor &cur, bool page_jump/*=false*/
     if (vadjustment) {
         int row = cur.get_row();
         if (page_jump) {
-            int fpb = get_frames_per_bar();
+            int fpb = get_page_scroll_size();
             int value = vadjustment->get_value();
             int page_size = vadjustment->get_page_size();
             if (row < value)
@@ -1188,6 +1190,42 @@ bool PatternView::on_button_release_event(GdkEventButton* event) {
     return false;
 }
 
+void PatternView::interpolate() {
+    if (!selection.get_active())
+        return;
+    selection.sort();
+    if (selection.p0.get_channel() != selection.p1.get_channel())
+        return;
+    if (selection.p0.get_param() != selection.p1.get_param())
+        return;
+    Pattern::iterator iter;
+    iter = get_event(selection.p0);
+    if (iter == get_pattern()->end())
+        return;
+    int v0 = iter->second.value;
+    iter = get_event(selection.p1);
+    if (iter == get_pattern()->end())
+        return;
+    int v1 = iter->second.value;
+    
+    int start_row = selection.p0.get_row();
+    int end_row = selection.p1.get_row();
+    double scale = (double)(v1 - v0) / (double)(end_row - start_row);
+    
+    clear_block();
+    
+    for (int i = start_row; i <= end_row; ++i) {
+        Pattern::Event event;
+        event.frame = i;
+        event.channel = selection.p0.get_channel();
+        event.param = selection.p0.get_param();
+        event.value = int((double)v0 + scale * (double)(i - start_row) + 0.5);
+        get_pattern()->add_event(event);
+    }
+    
+    invalidate_selection();
+}
+
 void PatternView::transpose(int step) {
     Pattern::iterator iter;
     for (Pattern::iterator iter = get_pattern()->begin(); 
@@ -1196,12 +1234,12 @@ void PatternView::transpose(int step) {
         cur = iter->second;
         if (!selection.in_range(cur))
             continue;
-	if (iter->second.param != ParamNote)
-	    continue;
-	if (iter->second.value == NoteOff)
-	    continue;
-	iter->second.value += step;
-	iter->second.sanitize_value();
+        if (iter->second.param != ParamNote)
+            continue;
+        if (iter->second.value == NoteOff)
+            continue;
+        iter->second.value += step;
+        iter->second.sanitize_value();
     }    
     
     invalidate_selection();
@@ -1210,25 +1248,9 @@ void PatternView::transpose(int step) {
 void PatternView::move_frames(int step, bool all_channels/*=false*/) {
     int row = cursor.get_row();
     int channel = cursor.get_channel();
-    int length = get_pattern()->get_length();
     
-    Pattern::iterator iter;
-    for (Pattern::iterator iter = get_pattern()->begin(); 
-         iter != get_pattern()->end(); ++iter) {
-        int frame = iter->second.frame;
-        if (frame < row)
-            continue;
-        if (!all_channels && (iter->second.channel != channel))
-            continue;
-        int newframe = frame + step;
-        if ((newframe < row) || (newframe >= length)) {
-            iter->second.frame = -1; // will be deleted
-        } else {
-            iter->second.frame = newframe;
-        }
-    }
+    get_pattern()->move_frames(row, step, (all_channels?-1:channel));
     
-    get_pattern()->update_keys();
     invalidate();
 }
 
@@ -1269,6 +1291,44 @@ void PatternView::on_clipboard_received(const Gtk::SelectionData &data) {
     jsong_reader.build(root, block);
     if (root.empty())
         return;
+
+    int range_begin = cursor.get_row();
+    int range_end = range_begin + block.get_length()-1;
+    
+    int channel_begin = cursor.get_channel();
+    int channel_end = channel_begin + block.get_channel_count()-1;
+    
+    int param_begin = 0;
+    int param_end = 0;
+    JSongReader::extract(root["first_param"], param_begin);
+    JSongReader::extract(root["last_param"], param_end);
+    
+    // paste selection
+    PatternSelection paste_sel(selection);
+    paste_sel.p0.set_row(range_begin);
+    paste_sel.p0.set_channel(channel_begin);
+    paste_sel.p0.set_param(param_begin);
+    paste_sel.p1.set_row(range_end);
+    paste_sel.p1.set_channel(channel_end);
+    paste_sel.p1.set_param(param_end);
+    paste_sel.set_active(true);
+    
+    // clear pattern at paste position
+    Pattern::iterator iter;
+    for (Pattern::iterator iter = pattern->begin(); 
+         iter != pattern->end(); ++iter) {
+        Pattern::Event &event = iter->second;
+        PatternCursor cur(cursor);
+        cur.set_row(event.frame);
+        cur.set_channel(event.channel);
+        cur.set_param(event.param);
+        if (paste_sel.in_range(cur)) {
+            event.frame = -1; // will be deleted
+        }
+    }
+    
+    pattern->update_keys();
+    
     
     for (Pattern::iterator iter = block.begin(); iter != block.end();
          iter++) {
@@ -1312,10 +1372,16 @@ void PatternView::copy_block() {
     block.update_keys(); // remove clipped keys
     int length = selection.p1.get_row() - selection.p0.get_row() + 1;
     block.set_length(length);
+    int channel_count = selection.p1.get_channel() - 
+                        selection.p0.get_channel() + 1;
+    block.set_channel_count(channel_count);
     
     JSongWriter jsong_writer;
     Json::Value root;
     jsong_writer.collect(root,block);
+    root["first_param"] = selection.p0.get_param();
+    root["last_param"] = selection.p1.get_param();
+    
     if (root.empty())
         return;
     Json::StyledWriter writer;
@@ -1430,6 +1496,7 @@ bool PatternView::on_key_press_event(GdkEventKey* event) {
             case GDK_c: copy_block(); return true;
             case GDK_v: paste_block(); return true;
             case GDK_d: clear_block(); return true;
+            case GDK_i: interpolate(); return true;
             case GDK_plus:
             case GDK_KP_Add:
             {
@@ -1456,6 +1523,19 @@ bool PatternView::on_key_press_event(GdkEventKey* event) {
             case GDK_End: set_octave(get_octave()+1); return true;
             case GDK_Insert: move_frames(1,true); return true;
             case GDK_Delete: move_frames(-1,true); return true;
+            case GDK_KP_Add:
+            {
+                if (shift_down)
+                    transpose(12);
+                return true;
+            } break;
+            case GDK_minus:
+            case GDK_KP_Subtract:
+            {
+                if (shift_down)
+                    transpose(-12);
+                return true;
+            } break;            
             default: break;
         }
     }
@@ -1470,8 +1550,8 @@ bool PatternView::on_key_press_event(GdkEventKey* event) {
             case GDK_Right: navigate(1,0,shift_down); return true;
             case GDK_Up: navigate(0,-1,shift_down); return true;
             case GDK_Down: navigate(0,1,shift_down); return true;
-            case GDK_Page_Up: navigate(0,-get_frames_per_bar(),shift_down); return true;
-            case GDK_Page_Down: navigate(0,get_frames_per_bar(),shift_down); return true;
+            case GDK_Page_Up: navigate(0,-get_page_step_size(),shift_down); return true;
+            case GDK_Page_Down: navigate(0,get_page_step_size(),shift_down); return true;
             case GDK_KP_Divide: set_octave(get_octave()-1); return true;
             case GDK_KP_Multiply: set_octave(get_octave()+1); return true;
             case GDK_Home: new_cursor.home(); set_cursor(new_cursor,shift_down); return true;
@@ -1488,15 +1568,15 @@ bool PatternView::on_key_press_event(GdkEventKey* event) {
             case GDK_plus:
             case GDK_KP_Add:
             {
-		if (shift_down)
-		    transpose(1);
+                if (shift_down)
+                    transpose(1);
                 return true;
             } break;
             case GDK_minus:
             case GDK_KP_Subtract:
             {
-		if (shift_down)
-		    transpose(-1);
+                if (shift_down)
+                    transpose(-1);
                 return true;
             } break;
             default: {
@@ -1664,6 +1744,15 @@ void PatternView::play_pattern() {
     _play_request(frame);
 }
 
+void PatternView::play_from_mouse_cursor() {
+    if (!get_pattern())
+        return;
+    PatternCursor new_cursor(cursor);
+    new_cursor.set_pos(cursor_x,cursor_y);
+    int frame = song_event->second.frame + new_cursor.get_row();
+    _play_request(frame);
+}
+
 void PatternView::play_from_cursor() {
     if (!get_pattern())
         return;
@@ -1685,6 +1774,18 @@ void PatternView::set_font_size(int width, int height) {
 void PatternView::get_font_size(int &width, int &height) const {
     width = font_width;
     height = font_height;
+}
+
+int PatternView::get_page_scroll_size() const {
+    return model->frames_per_beat;
+}
+
+int PatternView::get_page_step_size() const {
+    if (vadjustment) {
+        int page_size = vadjustment->get_page_size();
+        return std::min(page_size,get_frames_per_bar());
+    }
+    return get_frames_per_bar();
 }
 
 int PatternView::get_frames_per_bar() const {

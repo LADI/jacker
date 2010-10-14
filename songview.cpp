@@ -14,6 +14,7 @@ enum {
     ColorBackground,
     ColorTrack,
     ColorGhost,
+    ColorMuted,
 
     ColorCount,
 };
@@ -90,7 +91,10 @@ SongView::SongView(BaseObjectType* cobject,
     colors[ColorBackground].set("#e0e0e0");
     colors[ColorTrack].set("#ffffff");
     colors[ColorGhost].set("#606060");
+    colors[ColorMuted].set("#A0A0A0");
     play_position = 0;
+    cursor_x = 0;
+    cursor_y = 0;
 }
 
 void SongView::set_model(class Model &model) {
@@ -182,8 +186,15 @@ void SongView::render_event(Song::iterator event) {
     bool selected = is_event_selected(event);
     int x,y,w,h;
     get_event_rect(event, x, y, w, h);
+    
+    bool mute = event->second.mute;
+    
     Gdk::Color color;
-    if (event->second.pattern->refcount > 1) {
+    if (mute) {
+        x += 1;
+        y += 1;
+        color = colors[ColorMuted];
+    } else if (event->second.pattern->refcount > 1) {
         color = colors[ColorGhost];
     } else {
         color = colors[ColorBlack];
@@ -191,10 +202,12 @@ void SongView::render_event(Song::iterator event) {
     // main border
     gc->set_foreground(color);
     window->draw_rectangle(gc, false, x, y+1, w, h-3);
-    // bottom shadow
-    window->draw_rectangle(gc, true, x+1, y+h-1, w, 1);
-    // right shadow
-    window->draw_rectangle(gc, true, x+w+1, y+2, 1, h-2);
+    if (!mute) {
+        // bottom shadow
+        window->draw_rectangle(gc, true, x+1, y+h-1, w, 1);
+        // right shadow
+        window->draw_rectangle(gc, true, x+w+1, y+2, 1, h-2);
+    }
     pango_layout->set_width((w-4)*Pango::SCALE);
     pango_layout->set_text(event->second.pattern->name.c_str());
     if (selected) {
@@ -311,13 +324,7 @@ void SongView::new_pattern(const SongCursor &cur, int size) {
     int frame = cur.get_frame();
     int track = cur.get_track();
     Pattern &pattern = model->new_pattern();
-    if (model->enable_loop && (frame >= model->loop.get_begin()) &&
-        (frame < model->loop.get_end())) {
-        frame = model->loop.get_begin();
-        pattern.set_length(model->loop.get_end() - model->loop.get_begin());
-    } else if (size) {
-        pattern.set_length(size);
-    }
+    pattern.set_length(size);
     Song::iterator event = model->song.add_event(frame, track, pattern);
     clear_selection();
     select_event(event);    
@@ -586,6 +593,9 @@ bool SongView::on_motion_notify_event(GdkEventMotion *event) {
     bool shift_down = event->state & Gdk::SHIFT_MASK;
     bool ctrl_down = event->state & Gdk::CONTROL_MASK;
     
+    cursor_x = event->x;
+    cursor_y = event->y;
+    
     if (interact_mode == InteractNone) {
         SongCursor cur(*this);
         cur.set_pos(event->x, event->y);
@@ -638,7 +648,7 @@ void SongView::do_move(int ofs_frame, int ofs_track) {
     for (Song::IterList::iterator iter = selection.begin();
         iter != selection.end(); ++iter) {
         Song::Event &event = (*iter)->second;
-        int frame = event.frame + ofs_frame;
+        int frame = quantize_frame(event.frame + ofs_frame);
         int track = event.track + ofs_track;
         if ((frame < 0)||(track < 0)||(track >= model->get_track_count())) {
             can_move = false;
@@ -654,7 +664,7 @@ void SongView::do_move(int ofs_frame, int ofs_track) {
             iter != selection.end(); ++iter) {
             Song::Event event = (*iter)->second;
             
-            event.frame += ofs_frame;
+            event.frame = quantize_frame(event.frame + ofs_frame);
             event.track += ofs_track;
             
             _pattern_erased(*iter);
@@ -678,13 +688,24 @@ void SongView::apply_move() {
     do_move(ofs_frame, ofs_track);
 }
 
+void SongView::toggle_mute_selection() {
+    for (Song::IterList::iterator iter = selection.begin();
+        iter != selection.end(); ++iter) {
+        Song::Event &event = (*iter)->second;
+        event.mute = !event.mute;
+    }
+    
+    invalidate();
+}
+
+
 void SongView::do_resize(int ofs_frame) {
     // verify that we can move
     for (Song::IterList::iterator iter = selection.begin();
         iter != selection.end(); ++iter) {
         Song::Event &event = (*iter)->second;
-        int length = std::max(event.pattern->get_length() + ofs_frame, 
-            get_step_size());
+        int length = std::max(quantize_frame(event.pattern->get_length() 
+            + ofs_frame), get_step_size());
             
         event.pattern->set_length(length);
     }
@@ -887,6 +908,54 @@ void SongView::set_loop_end() {
     invalidate_loop();
 }
 
+void SongView::split_at_mouse_cursor() {
+    SongCursor cur(*this);
+    cur.set_pos(cursor_x, cursor_y);
+    
+    int frame = quantize_frame(cur.get_frame());
+    
+    invalidate_selection();
+    Song::IterList new_selection;
+    
+    Song::IterList::iterator iter;
+    for (iter = selection.begin(); iter != selection.end(); ++iter) {
+        Song::Event &event = (*iter)->second;
+        if ((frame > event.frame) && (frame < event.get_last_frame())) {
+            // create two new events
+            Song::Event left_event = event;
+            Song::Event right_event = event;
+            left_event.pattern = &model->new_pattern(event.pattern);
+            left_event.pattern->set_length(frame - event.frame);
+            right_event.pattern = &model->new_pattern(event.pattern);
+            right_event.pattern->move_frames(0, event.frame - frame, -1);
+            right_event.pattern->set_length(event.get_end() - frame);
+            right_event.frame = frame;
+            
+            new_selection.push_back(model->song.add_event(left_event));
+            new_selection.push_back(model->song.add_event(right_event));
+            
+            _pattern_erased(*iter);
+            model->song.erase(*iter);
+        }
+    }
+    
+    selection = new_selection;
+    invalidate_selection();    
+    
+    // cleanup
+    model->delete_unused_patterns();    
+}
+
+void SongView::seek_to_mouse_cursor() {
+    SongCursor cur(*this);
+    cur.set_pos(cursor_x, cursor_y);
+    
+    int frame = cur.get_frame();
+    if (frame < 0)
+        return;
+    _seek_request(quantize_frame(frame));
+}
+
 void SongView::play_from_selection() {
     int frame = get_selection_begin();
     if (frame == -1)
@@ -973,6 +1042,9 @@ bool SongView::on_key_press_event(GdkEventKey* event) {
                     edit_pattern(selection.front());
                 return true;
             } break;
+            case GDK_s: split_at_mouse_cursor(); return true;
+            case GDK_p: seek_to_mouse_cursor(); return true;
+            case GDK_m: toggle_mute_selection(); return true;
             case GDK_Left: navigate(-1,0); return true;
             case GDK_Right: navigate(1,0); return true;
             case GDK_Up: navigate(0,-1); return true;
@@ -1023,7 +1095,7 @@ void SongView::get_drag_offset(int &frame, int &track) {
     int dx,dy;
     drag.get_delta(dx,dy);
     get_event_length(dx, dy, frame, track);
-    frame = quantize_frame(frame);
+    //frame = quantize_frame(frame);
 }
 
 int SongView::get_step_size() {
@@ -1046,12 +1118,12 @@ void SongView::get_event_rect(Song::iterator iter, int &x, int &y, int &w, int &
     if (moving() && is_event_selected(iter)) {
         int ofs_frame,ofs_track;
         get_drag_offset(ofs_frame, ofs_track);
-        frame += ofs_frame;
+        frame = quantize_frame(frame + ofs_frame);
         track += ofs_track;
     } else if (resizing() && is_event_selected(iter)) {
         int ofs_frame,ofs_track;
         get_drag_offset(ofs_frame, ofs_track);
-        length = std::max(length + ofs_frame, get_step_size());
+        length = std::max(quantize_frame(length + ofs_frame), get_step_size());
     }
     get_event_pos(frame, track, x, y);
     get_event_size(length, w, h);
@@ -1141,6 +1213,10 @@ void SongView::set_scroll_adjustments(Gtk::Adjustment *hadjustment,
         vadjustment->signal_value_changed().connect(sigc::mem_fun(*this,
             &SongView::on_adjustment_value_changed));
     }                                         
+}
+
+SongView::type_seek_request SongView::signal_seek_request() {
+    return _seek_request;
 }
 
 SongView::type_pattern_edit_request SongView::signal_pattern_edit_request() {

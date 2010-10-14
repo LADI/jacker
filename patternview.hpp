@@ -242,6 +242,8 @@ public:
     CellRendererNote note_renderer;
     CellRendererHex byte_renderer;
     CellRendererCommand command_renderer;
+    
+    int cursor_x, cursor_y;
     //CellRendererHex word_renderer;
     class Model *model;
     
@@ -256,6 +258,8 @@ public:
     void show_cursor();
     void show_cursor(const PatternCursor &cur, bool page_jump=false);
     
+    int get_page_scroll_size() const;
+    int get_page_step_size() const;
     int get_frames_per_bar() const;
     void set_row_height(int height);
     int get_row_height() const;
@@ -288,6 +292,7 @@ public:
     
     void play_event(const Pattern::Event &event);
     void play_from_cursor();
+    void play_from_mouse_cursor();
     void play_pattern();
     
     void cut_block();
@@ -301,6 +306,7 @@ public:
     void end_block();
     void cycle_block_selection();
     void transpose(int step);
+    void interpolate();
     
     void move_frames(int step, bool all_channels=false);
     void reset();
