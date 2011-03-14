@@ -781,6 +781,7 @@ along with this program.  If not, see &lt;http://www.gnu.org/licenses/&gt;.</pro
     <property name="label">Sync</property>
     <property name="short_label">Sync</property>
     <property name="tooltip">Sync to JACK Transport</property>
+    <property name="stock_id">gtk-media-forward</property>
   </object>
   <object class="GtkAction" id="toggle_play_action">
     <property name="label">Toggle Play</property>
