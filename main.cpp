@@ -923,19 +923,20 @@ public:
         }
     }
 
-    bool on_idle() {
+    static gboolean maybe_ladish_L1_save(void* ptr) {
         if (ladish_L1_save_request) {
             printf("ladish L1 save request\n");
             ladish_L1_save_request = false;
 
-            on_save_action();
+            Jacker::App* app = (Jacker::App*)ptr;
+            app->on_save_action();
         }
 
         return true;
     }
 
     void init_idle() {
-        idle = Glib::signal_idle().connect(sigc::mem_fun(*this, &App::on_idle));
+        g_timeout_add(300, maybe_ladish_L1_save, this);
     }
 
     void run() {
