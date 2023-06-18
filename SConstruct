@@ -73,15 +73,16 @@ class LocalEnvironment(Environment):
         else:
             self.Append(
                 CXXFLAGS=[
+                    "-fpermissive",
                     "-g",
                     "-DDEBUG",
                     "-fno-strict-aliasing",
                     "-fwrapv",
                     "-Wall",
                     "-Wno-deprecated",
-                    '-march=core2', #x86_64: we need to take this out
-                    '-mfpmath=sse',
-                    '-msse',
+#                    '-march=core2', #x86_64: we need to take this out
+#                    '-mfpmath=sse',
+#                    '-msse',
                     '-ffast-math',
                 ],
             )
@@ -103,13 +104,14 @@ class LocalEnvironment(Environment):
         else:
             self.Append(
                 CXXFLAGS=[
+                    "-fpermissive",
                     "-fno-strict-aliasing",
                     "-fwrapv",
                     "-Wall",
                     "-Wno-deprecated",
-                    '-march=core2', #x86_64: we need to take this out
-                    '-mfpmath=sse',
-                    '-msse',
+#                    '-march=core2', #x86_64: we need to take this out
+#                    '-mfpmath=sse',
+#                    '-msse',
                     '-O3',
                     '-funroll-loops',
                     '-fomit-frame-pointer',
